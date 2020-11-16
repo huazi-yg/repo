@@ -43,8 +43,8 @@ branch but need to incorporate new upstream changes "underneath" them.
 
   def _Options(self, p):
     p.add_option('-i', '--interactive',
-                dest="interactive", action="store_true",
-                help="interactive rebase (single project only)")
+                 dest="interactive", action="store_true",
+                 help="interactive rebase (single project only)")
 
     p.add_option('--fail-fast',
                  dest='fail_fast', action='store_true',
@@ -53,7 +53,7 @@ branch but need to incorporate new upstream changes "underneath" them.
                  dest='force_rebase', action='store_true',
                  help='Pass --force-rebase to git rebase')
     p.add_option('--no-ff',
-                 dest='no_ff', action='store_true',
+                 dest='ff', default=True, action='store_false',
                  help='Pass --no-ff to git rebase')
     p.add_option('-q', '--quiet',
                  dest='quiet', action='store_true',
@@ -82,7 +82,7 @@ branch but need to incorporate new upstream changes "underneath" them.
             file=sys.stderr)
       if len(args) == 1:
         print('note: project %s is mapped to more than one path' % (args[0],),
-            file=sys.stderr)
+              file=sys.stderr)
       return 1
 
     # Setup the common git rebase args that we use for all projects.
@@ -93,7 +93,7 @@ branch but need to incorporate new upstream changes "underneath" them.
       common_args.append('--quiet')
     if opt.force_rebase:
       common_args.append('--force-rebase')
-    if opt.no_ff:
+    if not opt.ff:
       common_args.append('--no-ff')
     if opt.autosquash:
       common_args.append('--autosquash')

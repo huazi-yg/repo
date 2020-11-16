@@ -18,9 +18,11 @@ from color import Coloring
 from command import PagedCommand
 from manifest_xml import XmlManifest
 
+
 class _Coloring(Coloring):
   def __init__(self, config):
     Coloring.__init__(self, config, "status")
+
 
 class Diffmanifests(PagedCommand):
   """ A command to see logs in projects represented by manifests
@@ -77,7 +79,7 @@ synced and their revisions won't be found.
                  metavar='<FORMAT>',
                  help='print the log using a custom git pretty format string')
 
-  def _printRawDiff(self, diff):
+  def _printRawDiff(self, diff, pretty_format=None):
     for project in diff['added']:
       self.printText("A %s %s" % (project.relpath, project.revisionExpr))
       self.out.nl()
@@ -90,7 +92,7 @@ synced and their revisions won't be found.
       self.printText("C %s %s %s" % (project.relpath, project.revisionExpr,
                                      otherProject.revisionExpr))
       self.out.nl()
-      self._printLogs(project, otherProject, raw=True, color=False)
+      self._printLogs(project, otherProject, raw=True, color=False, pretty_format=pretty_format)
 
     for project, otherProject in diff['unreachable']:
       self.printText("U %s %s %s" % (project.relpath, project.revisionExpr,
@@ -184,10 +186,10 @@ synced and their revisions won't be found.
     self.out = _Coloring(self.manifest.globalConfig)
     self.printText = self.out.nofmt_printer('text')
     if opt.color:
-      self.printProject = self.out.nofmt_printer('project', attr = 'bold')
-      self.printAdded = self.out.nofmt_printer('green', fg = 'green', attr = 'bold')
-      self.printRemoved = self.out.nofmt_printer('red', fg = 'red', attr = 'bold')
-      self.printRevision = self.out.nofmt_printer('revision', fg = 'yellow')
+      self.printProject = self.out.nofmt_printer('project', attr='bold')
+      self.printAdded = self.out.nofmt_printer('green', fg='green', attr='bold')
+      self.printRemoved = self.out.nofmt_printer('red', fg='red', attr='bold')
+      self.printRevision = self.out.nofmt_printer('revision', fg='yellow')
     else:
       self.printProject = self.printAdded = self.printRemoved = self.printRevision = self.printText
 
@@ -201,6 +203,6 @@ synced and their revisions won't be found.
 
     diff = manifest1.projectsDiff(manifest2)
     if opt.raw:
-      self._printRawDiff(diff)
+      self._printRawDiff(diff, pretty_format=opt.pretty_format)
     else:
       self._printDiff(diff, color=opt.color, pretty_format=opt.pretty_format)

@@ -13,7 +13,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
+from __future__ import unicode_literals
 from __future__ import print_function
 import os
 import sys
@@ -24,6 +24,9 @@ from git_command import git
 import gitc_utils
 from progress import Progress
 from project import SyncBuffer
+from git_config import GitConfig
+from error import ForkProjectError
+
 
 class Start(Command):
   common = True
@@ -53,6 +56,7 @@ revision specified in the manifest.
     if not git.check_ref_format('heads/%s' % nb):
       self.OptionParser.error("'%s' is not a valid name" % nb)
 
+
   def Execute(self, opt, args):
     nb = args[0]
     err = []
@@ -60,10 +64,11 @@ revision specified in the manifest.
     if not opt.all:
       projects = args[1:]
       if len(projects) < 1:
-        projects = ['.',]  # start it in the local project by default
+        projects = ['.']  # start it in the local project by default
 
     all_projects = self.GetProjects(projects,
                                     missing_ok=bool(self.gitc_manifest))
+
 
     # This must happen after we find all_projects, since GetProjects may need
     # the local directory, which will disappear once we save the GITC manifest.
@@ -85,6 +90,31 @@ revision specified in the manifest.
         os.chdir(self.manifest.topdir)
 
     pm = Progress('Starting %s' % nb, len(all_projects))
+
+    if not opt.all:
+      fork_success_count = 0
+      token = self.manifest.manifestProject.config.GetString('repo.token')
+      if not token:
+        token = GitConfig.ForUser().GetString('repo.token')
+        if not token:
+          sys.stderr.write('repo.token is None, Please set it, you need `repo config -h`\n')
+          sys.exit(1)
+      pushurl = self.manifest.manifestProject.config.GetString('repo.pushurl')
+      success_msg = None
+      for project in all_projects:
+        try:
+          status_code, msg = project.ForkProject(token)
+          if status_code == 201:
+            fork_success_count += 1
+            if not success_msg:
+              success_msg = msg
+        except ForkProjectError:
+          continue
+      if fork_success_count > 0 and pushurl is None:
+        ssh_url = success_msg['ssh_url']
+        pushurl = ssh_url.split('/')[0]
+        self.manifest.manifestProject.config.SetString('repo.pushurl',  pushurl)
+
     for project in all_projects:
       pm.update()
 
@@ -113,7 +143,7 @@ revision specified in the manifest.
           branch_merge = self.manifest.default.revisionExpr
 
       if not project.StartBranch(
-          nb, branch_merge=branch_merge, revision=opt.revision):
+              nb, branch_merge=branch_merge, revision=opt.revision):
         err.append(project)
     pm.end()
 

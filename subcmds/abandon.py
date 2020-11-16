@@ -15,11 +15,14 @@
 # limitations under the License.
 
 from __future__ import print_function
-import sys
-from command import Command
+
 from collections import defaultdict
+import sys
+
+from command import Command
 from git_command import git
 from progress import Progress
+
 
 class Abandon(Command):
   common = True
@@ -32,7 +35,11 @@ deleting it (and all its history) from your local repository.
 
 It is equivalent to "git branch -D <branchname>".
 """
+
   def _Options(self, p):
+    p.add_option('-q', '--quiet',
+                 action='store_true', default=False,
+                 help='be quiet')
     p.add_option('--all',
                  dest='all', action='store_true',
                  help='delete all branches in all projects')
@@ -79,21 +86,24 @@ It is equivalent to "git branch -D <branchname>".
 
     if err:
       for br in err.keys():
-        err_msg = "error: cannot abandon %s" %br
+        err_msg = "error: cannot abandon %s" % br
         print(err_msg, file=sys.stderr)
         for proj in err[br]:
-          print(' '*len(err_msg) + " | %s" % proj.relpath, file=sys.stderr)
+          print(' ' * len(err_msg) + " | %s" % proj.relpath, file=sys.stderr)
       sys.exit(1)
     elif not success:
       print('error: no project has local branch(es) : %s' % nb,
             file=sys.stderr)
       sys.exit(1)
     else:
-      print('Abandoned branches:', file=sys.stderr)
+      # Everything below here is displaying status.
+      if opt.quiet:
+        return
+      print('Abandoned branches:')
       for br in success.keys():
         if len(all_projects) > 1 and len(all_projects) == len(success[br]):
           result = "all project"
         else:
           result = "%s" % (
-            ('\n'+' '*width + '| ').join(p.relpath for p in success[br]))
-        print("%s%s| %s\n" % (br,' '*(width-len(br)), result),file=sys.stderr)
+              ('\n' + ' ' * width + '| ').join(p.relpath for p in success[br]))
+        print("%s%s| %s\n" % (br, ' ' * (width - len(br)), result))

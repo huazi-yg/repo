@@ -80,7 +80,7 @@ class FileDescriptorStreams(object):
     """
     raise NotImplementedError
 
-  def _create_stream(fd, dest, std_name):
+  def _create_stream(self, fd, dest, std_name):
     """ Creates a new stream wrapping an existing file descriptor.
     """
     raise NotImplementedError
@@ -90,8 +90,14 @@ class _FileDescriptorStreamsNonBlocking(FileDescriptorStreams):
   """ Implementation of FileDescriptorStreams for platforms that support
   non blocking I/O.
   """
+  def __init__(self):
+    super(_FileDescriptorStreamsNonBlocking, self).__init__()
+    self._poll = select.poll()
+    self._fd_to_stream = {}
+
   class Stream(object):
     """ Encapsulates a file descriptor """
+
     def __init__(self, fd, dest, std_name):
       self.fd = fd
       self.dest = dest
@@ -113,11 +119,18 @@ class _FileDescriptorStreamsNonBlocking(FileDescriptorStreams):
       self.fd.close()
 
   def _create_stream(self, fd, dest, std_name):
-    return self.Stream(fd, dest, std_name)
+    stream = self.Stream(fd, dest, std_name)
+    self._fd_to_stream[stream.fileno()] = stream
+    self._poll.register(stream, select.POLLIN)
+    return stream
+
+  def remove(self, stream):
+    self._poll.unregister(stream)
+    del self._fd_to_stream[stream.fileno()]
+    super(_FileDescriptorStreamsNonBlocking, self).remove(stream)
 
   def select(self):
-    ready_streams, _, _ = select.select(self.streams, [], [])
-    return ready_streams
+    return [self._fd_to_stream[fd] for fd, _ in self._poll.poll()]
 
 
 class _FileDescriptorStreamsThreads(FileDescriptorStreams):
@@ -125,6 +138,7 @@ class _FileDescriptorStreamsThreads(FileDescriptorStreams):
   non blocking I/O. This implementation requires creating threads issuing
   blocking read operations on file descriptors.
   """
+
   def __init__(self):
     super(_FileDescriptorStreamsThreads, self).__init__()
     # The queue is shared accross all threads so we can simulate the
@@ -144,12 +158,14 @@ class _FileDescriptorStreamsThreads(FileDescriptorStreams):
 
   class QueueItem(object):
     """ Item put in the shared queue """
+
     def __init__(self, stream, data):
       self.stream = stream
       self.data = data
 
   class Stream(object):
     """ Encapsulates a file descriptor """
+
     def __init__(self, fd, dest, std_name, queue):
       self.fd = fd
       self.dest = dest
@@ -175,7 +191,7 @@ class _FileDescriptorStreamsThreads(FileDescriptorStreams):
       for line in iter(self.fd.readline, b''):
         self.queue.put(_FileDescriptorStreamsThreads.QueueItem(self, line))
       self.fd.close()
-      self.queue.put(_FileDescriptorStreamsThreads.QueueItem(self, None))
+      self.queue.put(_FileDescriptorStreamsThreads.QueueItem(self, b''))
 
 
 def symlink(source, link_name):

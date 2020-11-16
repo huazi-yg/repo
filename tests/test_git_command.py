@@ -21,7 +21,40 @@ from __future__ import print_function
 import re
 import unittest
 
+try:
+  from unittest import mock
+except ImportError:
+  import mock
+
 import git_command
+import wrapper
+
+
+class SSHUnitTest(unittest.TestCase):
+  """Tests the ssh functions."""
+
+  def test_ssh_version(self):
+    """Check ssh_version() handling."""
+    ver = git_command._parse_ssh_version('Unknown\n')
+    self.assertEqual(ver, ())
+    ver = git_command._parse_ssh_version('OpenSSH_1.0\n')
+    self.assertEqual(ver, (1, 0))
+    ver = git_command._parse_ssh_version('OpenSSH_6.6.1p1 Ubuntu-2ubuntu2.13, OpenSSL 1.0.1f 6 Jan 2014\n')
+    self.assertEqual(ver, (6, 6, 1))
+    ver = git_command._parse_ssh_version('OpenSSH_7.6p1 Ubuntu-4ubuntu0.3, OpenSSL 1.0.2n  7 Dec 2017\n')
+    self.assertEqual(ver, (7, 6))
+
+  def test_ssh_sock(self):
+    """Check ssh_sock() function."""
+    with mock.patch('tempfile.mkdtemp', return_value='/tmp/foo'):
+      # old ssh version uses port
+      with mock.patch('git_command.ssh_version', return_value=(6, 6)):
+        self.assertTrue(git_command.ssh_sock().endswith('%p'))
+      git_command._ssh_sock_path = None
+      # new ssh version uses hash
+      with mock.patch('git_command.ssh_version', return_value=(6, 7)):
+        self.assertTrue(git_command.ssh_sock().endswith('%C'))
+      git_command._ssh_sock_path = None
 
 
 class GitCallUnitTest(unittest.TestCase):
@@ -35,7 +68,7 @@ class GitCallUnitTest(unittest.TestCase):
     # We don't dive too deep into the values here to avoid having to update
     # whenever git versions change.  We do check relative to this min version
     # as this is what `repo` itself requires via MIN_GIT_VERSION.
-    MIN_GIT_VERSION = (1, 7, 2)
+    MIN_GIT_VERSION = (2, 10, 2)
     self.assertTrue(isinstance(ver.major, int))
     self.assertTrue(isinstance(ver.minor, int))
     self.assertTrue(isinstance(ver.micro, int))
@@ -76,3 +109,45 @@ class UserAgentUnitTest(unittest.TestCase):
     # the general form.
     m = re.match(r'^git/[^ ]+ ([^ ]+) git-repo/[^ ]+', ua)
     self.assertIsNotNone(m)
+
+
+class GitRequireTests(unittest.TestCase):
+  """Test the git_require helper."""
+
+  def setUp(self):
+    ver = wrapper.GitVersion(1, 2, 3, 4)
+    mock.patch.object(git_command.git, 'version_tuple', return_value=ver).start()
+
+  def tearDown(self):
+    mock.patch.stopall()
+
+  def test_older_nonfatal(self):
+    """Test non-fatal require calls with old versions."""
+    self.assertFalse(git_command.git_require((2,)))
+    self.assertFalse(git_command.git_require((1, 3)))
+    self.assertFalse(git_command.git_require((1, 2, 4)))
+    self.assertFalse(git_command.git_require((1, 2, 3, 5)))
+
+  def test_newer_nonfatal(self):
+    """Test non-fatal require calls with newer versions."""
+    self.assertTrue(git_command.git_require((0,)))
+    self.assertTrue(git_command.git_require((1, 0)))
+    self.assertTrue(git_command.git_require((1, 2, 0)))
+    self.assertTrue(git_command.git_require((1, 2, 3, 0)))
+
+  def test_equal_nonfatal(self):
+    """Test require calls with equal values."""
+    self.assertTrue(git_command.git_require((1, 2, 3, 4), fail=False))
+    self.assertTrue(git_command.git_require((1, 2, 3, 4), fail=True))
+
+  def test_older_fatal(self):
+    """Test fatal require calls with old versions."""
+    with self.assertRaises(SystemExit) as e:
+      git_command.git_require((2,), fail=True)
+      self.assertNotEqual(0, e.code)
+
+  def test_older_fatal_msg(self):
+    """Test fatal require calls with old versions and message."""
+    with self.assertRaises(SystemExit) as e:
+      git_command.git_require((2,), fail=True, msg='so sad')
+      self.assertNotEqual(0, e.code)

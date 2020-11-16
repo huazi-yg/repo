@@ -21,6 +21,7 @@ import errno
 import json
 import os
 import re
+import signal
 import ssl
 import subprocess
 import sys
@@ -41,7 +42,6 @@ else:
   urllib.request = urllib2
   urllib.error = urllib2
 
-from signal import SIGTERM
 from error import GitError, UploadError
 import platform_utils
 from repo_trace import Trace
@@ -59,39 +59,47 @@ ID_RE = re.compile(r'^[0-9a-f]{40}$')
 
 REVIEW_CACHE = dict()
 
+
 def IsChange(rev):
   return rev.startswith(R_CHANGES)
+
 
 def IsId(rev):
   return ID_RE.match(rev)
 
+
 def IsTag(rev):
   return rev.startswith(R_TAGS)
 
+
 def IsImmutable(rev):
     return IsChange(rev) or IsId(rev) or IsTag(rev)
+
 
 def _key(name):
   parts = name.split('.')
   if len(parts) < 2:
     return name.lower()
-  parts[ 0] = parts[ 0].lower()
+  parts[0] = parts[0].lower()
   parts[-1] = parts[-1].lower()
   return '.'.join(parts)
+
 
 class GitConfig(object):
   _ForUser = None
 
+  _USER_CONFIG = '~/.gitconfig'
+
   @classmethod
   def ForUser(cls):
     if cls._ForUser is None:
-      cls._ForUser = cls(configfile = os.path.expanduser('~/.gitconfig'))
+      cls._ForUser = cls(configfile=os.path.expanduser(cls._USER_CONFIG))
     return cls._ForUser
 
   @classmethod
   def ForRepository(cls, gitdir, defaults=None):
-    return cls(configfile = os.path.join(gitdir, 'config'),
-               defaults = defaults)
+    return cls(configfile=os.path.join(gitdir, 'config'),
+               defaults=defaults)
 
   def __init__(self, configfile, defaults=None, jsonFile=None):
     self.file = configfile
@@ -104,17 +112,54 @@ class GitConfig(object):
     self._json = jsonFile
     if self._json is None:
       self._json = os.path.join(
-        os.path.dirname(self.file),
-        '.repo_' + os.path.basename(self.file) + '.json')
+          os.path.dirname(self.file),
+          '.repo_' + os.path.basename(self.file) + '.json')
 
-  def Has(self, name, include_defaults = True):
+  def Has(self, name, include_defaults=True):
     """Return true if this configuration file has the key.
     """
     if _key(name) in self._cache:
       return True
     if include_defaults and self.defaults:
-      return self.defaults.Has(name, include_defaults = True)
+      return self.defaults.Has(name, include_defaults=True)
     return False
+
+  def GetInt(self, name):
+    """Returns an integer from the configuration file.
+
+    This follows the git config syntax.
+
+    Args:
+      name: The key to lookup.
+
+    Returns:
+      None if the value was not defined, or is not a boolean.
+      Otherwise, the number itself.
+    """
+    v = self.GetString(name)
+    if v is None:
+      return None
+    v = v.strip()
+
+    mult = 1
+    if v.endswith('k'):
+      v = v[:-1]
+      mult = 1024
+    elif v.endswith('m'):
+      v = v[:-1]
+      mult = 1024 * 1024
+    elif v.endswith('g'):
+      v = v[:-1]
+      mult = 1024 * 1024 * 1024
+
+    base = 10
+    if v.startswith('0x'):
+      base = 16
+
+    try:
+      return int(v, base=base) * mult
+    except ValueError:
+      return None
 
   def GetBoolean(self, name):
     """Returns a boolean from the configuration file.
@@ -142,7 +187,7 @@ class GitConfig(object):
       v = self._cache[_key(name)]
     except KeyError:
       if self.defaults:
-        return self.defaults.GetString(name, all_keys = all_keys)
+        return self.defaults.GetString(name, all_keys=all_keys)
       v = []
 
     if not all_keys:
@@ -153,7 +198,7 @@ class GitConfig(object):
     r = []
     r.extend(v)
     if self.defaults:
-      r.extend(self.defaults.GetString(name, all_keys = True))
+      r.extend(self.defaults.GetString(name, all_keys=True))
     return r
 
   def SetString(self, name, value):
@@ -217,7 +262,7 @@ class GitConfig(object):
     """
     return self._sections.get(section, set())
 
-  def HasSection(self, section, subsection = ''):
+  def HasSection(self, section, subsection=''):
     """Does at least one key in section.subsection exist?
     """
     try:
@@ -268,8 +313,7 @@ class GitConfig(object):
 
   def _ReadJson(self):
     try:
-      if os.path.getmtime(self._json) \
-      <= os.path.getmtime(self.file):
+      if os.path.getmtime(self._json) <= os.path.getmtime(self.file):
         platform_utils.remove(self._json)
         return None
     except OSError:
@@ -318,17 +362,23 @@ class GitConfig(object):
     return c
 
   def _do(self, *args):
-    command = ['config', '--file', self.file]
+    command = ['config', '--file', self.file, '--includes']
     command.extend(args)
 
     p = GitCommand(None,
                    command,
-                   capture_stdout = True,
-                   capture_stderr = True)
+                   capture_stdout=True,
+                   capture_stderr=True)
     if p.Wait() == 0:
       return p.stdout
     else:
       GitError('git config %s: %s' % (str(args), p.stderr))
+
+
+class RepoConfig(GitConfig):
+  """User settings for repo itself."""
+
+  _USER_CONFIG = '~/.repoconfig/config'
 
 
 class RefSpec(object):
@@ -392,6 +442,7 @@ _master_keys = set()
 _ssh_master = True
 _master_keys_lock = None
 
+
 def init_ssh():
   """Should be called once at the start of repo to init ssh master handling.
 
@@ -400,6 +451,7 @@ def init_ssh():
   global _master_keys_lock
   assert _master_keys_lock is None, "Should only call init_ssh once"
   _master_keys_lock = _threading.Lock()
+
 
 def _open_ssh(host, port=None):
   global _ssh_master
@@ -421,17 +473,17 @@ def _open_ssh(host, port=None):
     if key in _master_keys:
       return True
 
-    if not _ssh_master \
-    or 'GIT_SSH' in os.environ \
-    or sys.platform in ('win32', 'cygwin'):
+    if (not _ssh_master
+            or 'GIT_SSH' in os.environ
+            or sys.platform in ('win32', 'cygwin')):
       # failed earlier, or cygwin ssh can't do this
       #
       return False
 
     # We will make two calls to ssh; this is the common part of both calls.
     command_base = ['ssh',
-                     '-o','ControlPath %s' % ssh_sock(),
-                     host]
+                    '-o', 'ControlPath %s' % ssh_sock(),
+                    host]
     if port is not None:
       command_base[1:1] = ['-p', str(port)]
 
@@ -439,13 +491,13 @@ def _open_ssh(host, port=None):
     # ...but before actually starting a master, we'll double-check.  This can
     # be important because we can't tell that that 'git@myhost.com' is the same
     # as 'myhost.com' where "User git" is setup in the user's ~/.ssh/config file.
-    check_command = command_base + ['-O','check']
+    check_command = command_base + ['-O', 'check']
     try:
       Trace(': %s', ' '.join(check_command))
       check_process = subprocess.Popen(check_command,
                                        stdout=subprocess.PIPE,
                                        stderr=subprocess.PIPE)
-      check_process.communicate() # read output, but ignore it...
+      check_process.communicate()  # read output, but ignore it...
       isnt_running = check_process.wait()
 
       if not isnt_running:
@@ -458,16 +510,14 @@ def _open_ssh(host, port=None):
       # to the log there.
       pass
 
-    command = command_base[:1] + \
-              ['-M', '-N'] + \
-              command_base[1:]
+    command = command_base[:1] + ['-M', '-N'] + command_base[1:]
     try:
       Trace(': %s', ' '.join(command))
       p = subprocess.Popen(command)
     except Exception as e:
       _ssh_master = False
       print('\nwarn: cannot enable ssh control master for %s:%s\n%s'
-             % (host,port, str(e)), file=sys.stderr)
+            % (host, port, str(e)), file=sys.stderr)
       return False
 
     time.sleep(1)
@@ -481,6 +531,7 @@ def _open_ssh(host, port=None):
   finally:
     _master_keys_lock.release()
 
+
 def close_ssh():
   global _master_keys_lock
 
@@ -488,7 +539,7 @@ def close_ssh():
 
   for p in _master_processes:
     try:
-      os.kill(p.pid, SIGTERM)
+      os.kill(p.pid, signal.SIGTERM)
       p.wait()
     except OSError:
       pass
@@ -505,14 +556,17 @@ def close_ssh():
   # We're done with the lock, so we can delete it.
   _master_keys_lock = None
 
+
 URI_SCP = re.compile(r'^([^@:]*@?[^:/]{1,}):')
 URI_ALL = re.compile(r'^([a-z][a-z+-]*)://([^@/]*@?[^/]*)/')
+
 
 def GetSchemeFromUrl(url):
   m = URI_ALL.match(url)
   if m:
     return m.group(1)
   return None
+
 
 @contextlib.contextmanager
 def GetUrlCookieFile(url, quiet):
@@ -528,7 +582,7 @@ def GetUrlCookieFile(url, quiet):
         cookiefile = None
         proxy = None
         for line in p.stdout:
-          line = line.strip()
+          line = line.strip().decode('utf-8')
           if line.startswith(cookieprefix):
             cookiefile = os.path.expanduser(line[len(cookieprefix):])
           if line.startswith(proxyprefix):
@@ -540,7 +594,7 @@ def GetUrlCookieFile(url, quiet):
       finally:
         p.stdin.close()
         if p.wait():
-          err_msg = p.stderr.read()
+          err_msg = p.stderr.read().decode('utf-8')
           if ' -print_config' in err_msg:
             pass  # Persistent proxy doesn't support -print_config.
           elif not quiet:
@@ -553,6 +607,7 @@ def GetUrlCookieFile(url, quiet):
   if cookiefile:
     cookiefile = os.path.expanduser(cookiefile)
   yield cookiefile, None
+
 
 def _preconnect(url):
   m = URI_ALL.match(url)
@@ -574,9 +629,11 @@ def _preconnect(url):
 
   return False
 
+
 class Remote(object):
   """Configuration options related to a remote.
   """
+
   def __init__(self, config, name):
     self._config = config
     self.name = name
@@ -585,7 +642,7 @@ class Remote(object):
     self.review = self._Get('review')
     self.projectname = self._Get('projectname')
     self.fetch = list(map(RefSpec.FromString,
-                      self._Get('fetch', all_keys=True)))
+                          self._Get('fetch', all_keys=True)))
     self._review_url = None
 
   def _InsteadOf(self):
@@ -599,8 +656,8 @@ class Remote(object):
       insteadOfList = globCfg.GetString(key, all_keys=True)
 
       for insteadOf in insteadOfList:
-        if self.url.startswith(insteadOf) \
-        and len(insteadOf) > len(longest):
+        if (self.url.startswith(insteadOf)
+                and len(insteadOf) > len(longest)):
           longest = insteadOf
           longestUrl = url
 
@@ -731,12 +788,13 @@ class Remote(object):
 
   def _Get(self, key, all_keys=False):
     key = 'remote.%s.%s' % (self.name, key)
-    return self._config.GetString(key, all_keys = all_keys)
+    return self._config.GetString(key, all_keys=all_keys)
 
 
 class Branch(object):
   """Configuration options related to a single branch.
   """
+
   def __init__(self, config, name):
     self._config = config
     self.name = name
@@ -780,4 +838,4 @@ class Branch(object):
 
   def _Get(self, key, all_keys=False):
     key = 'branch.%s.%s' % (self.name, key)
-    return self._config.GetString(key, all_keys = all_keys)
+    return self._config.GetString(key, all_keys=all_keys)

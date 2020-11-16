@@ -16,6 +16,7 @@
 
 from __future__ import print_function
 import os
+import re
 import sys
 import subprocess
 import tempfile
@@ -28,7 +29,17 @@ from repo_trace import REPO_TRACE, IsTrace, Trace
 from wrapper import Wrapper
 
 GIT = 'git'
-MIN_GIT_VERSION = (1, 5, 4)
+# NB: These do not need to be kept in sync with the repo launcher script.
+# These may be much newer as it allows the repo launcher to roll between
+# different repo releases while source versions might require a newer git.
+#
+# The soft version is when we start warning users that the version is old and
+# we'll be dropping support for it.  We'll refuse to work with versions older
+# than the hard version.
+#
+# git-1.7 is in (EOL) Ubuntu Precise.  git-1.9 is in Ubuntu Trusty.
+MIN_GIT_VERSION_SOFT = (1, 9, 1)
+MIN_GIT_VERSION_HARD = (1, 7, 2)
 GIT_DIR = 'GIT_DIR'
 
 LAST_GITDIR = None
@@ -37,6 +48,36 @@ LAST_CWD = None
 _ssh_proxy_path = None
 _ssh_sock_path = None
 _ssh_clients = []
+_ssh_version = None
+
+
+def _run_ssh_version():
+  """run ssh -V to display the version number"""
+  return subprocess.check_output(['ssh', '-V'], stderr=subprocess.STDOUT).decode()
+
+
+def _parse_ssh_version(ver_str=None):
+  """parse a ssh version string into a tuple"""
+  if ver_str is None:
+    ver_str = _run_ssh_version()
+  m = re.match(r'^OpenSSH_([0-9.]+)(p[0-9]+)?\s', ver_str)
+  if m:
+    return tuple(int(x) for x in m.group(1).split('.'))
+  else:
+    return ()
+
+
+def ssh_version():
+  """return ssh version as a tuple"""
+  global _ssh_version
+  if _ssh_version is None:
+    try:
+      _ssh_version = _parse_ssh_version()
+    except subprocess.CalledProcessError:
+      print('fatal: unable to detect ssh version', file=sys.stderr)
+      sys.exit(1)
+  return _ssh_version
+
 
 def ssh_sock(create=True):
   global _ssh_sock_path
@@ -46,27 +87,35 @@ def ssh_sock(create=True):
     tmp_dir = '/tmp'
     if not os.path.exists(tmp_dir):
       tmp_dir = tempfile.gettempdir()
+    if ssh_version() < (6, 7):
+      tokens = '%r@%h:%p'
+    else:
+      tokens = '%C'  # hash of %l%h%p%r
     _ssh_sock_path = os.path.join(
-      tempfile.mkdtemp('', 'ssh-', tmp_dir),
-      'master-%r@%h:%p')
+        tempfile.mkdtemp('', 'ssh-', tmp_dir),
+        'master-' + tokens)
   return _ssh_sock_path
+
 
 def _ssh_proxy():
   global _ssh_proxy_path
   if _ssh_proxy_path is None:
     _ssh_proxy_path = os.path.join(
-      os.path.dirname(__file__),
-      'git_ssh')
+        os.path.dirname(__file__),
+        'git_ssh')
   return _ssh_proxy_path
+
 
 def _add_ssh_client(p):
   _ssh_clients.append(p)
+
 
 def _remove_ssh_client(p):
   try:
     _ssh_clients.remove(p)
   except ValueError:
     pass
+
 
 def terminate_ssh_clients():
   global _ssh_clients
@@ -78,7 +127,9 @@ def terminate_ssh_clients():
       pass
   _ssh_clients = []
 
+
 _git_version = None
+
 
 class _GitCall(object):
   def version_tuple(self):
@@ -91,12 +142,15 @@ class _GitCall(object):
     return _git_version
 
   def __getattr__(self, name):
-    name = name.replace('_','-')
+    name = name.replace('_', '-')
+
     def fun(*cmdv):
       command = [name]
       command.extend(cmdv)
       return GitCommand(None, command).Wait() == 0
     return fun
+
+
 git = _GitCall()
 
 
@@ -177,7 +231,9 @@ class UserAgent(object):
 
     return self._git_ua
 
+
 user_agent = UserAgent()
+
 
 def git_require(min_version, fail=False, msg=''):
   git_version = git.version_tuple()
@@ -191,42 +247,41 @@ def git_require(min_version, fail=False, msg=''):
     sys.exit(1)
   return False
 
-def _setenv(env, name, value):
-  env[name] = value.encode()
 
 class GitCommand(object):
   def __init__(self,
                project,
                cmdv,
-               bare = False,
-               provide_stdin = False,
-               capture_stdout = False,
-               capture_stderr = False,
-               disable_editor = False,
-               ssh_proxy = False,
-               cwd = None,
-               gitdir = None):
+               bare=False,
+               provide_stdin=False,
+               capture_stdout=False,
+               capture_stderr=False,
+               merge_output=False,
+               disable_editor=False,
+               ssh_proxy=False,
+               cwd=None,
+               gitdir=None):
     env = self._GetBasicEnv()
 
     # If we are not capturing std* then need to print it.
     self.tee = {'stdout': not capture_stdout, 'stderr': not capture_stderr}
 
     if disable_editor:
-      _setenv(env, 'GIT_EDITOR', ':')
+      env['GIT_EDITOR'] = ':'
     if ssh_proxy:
-      _setenv(env, 'REPO_SSH_SOCK', ssh_sock())
-      _setenv(env, 'GIT_SSH', _ssh_proxy())
-      _setenv(env, 'GIT_SSH_VARIANT', 'ssh')
+      env['REPO_SSH_SOCK'] = ssh_sock()
+      env['GIT_SSH'] = _ssh_proxy()
+      env['GIT_SSH_VARIANT'] = 'ssh'
     if 'http_proxy' in env and 'darwin' == sys.platform:
       s = "'http.proxy=%s'" % (env['http_proxy'],)
       p = env.get('GIT_CONFIG_PARAMETERS')
       if p is not None:
         s = p + ' ' + s
-      _setenv(env, 'GIT_CONFIG_PARAMETERS', s)
+      env['GIT_CONFIG_PARAMETERS'] = s
     if 'GIT_ALLOW_PROTOCOL' not in env:
-      _setenv(env, 'GIT_ALLOW_PROTOCOL',
-              'file:git:http:https:ssh:persistent-http:persistent-https:sso:rpc')
-    _setenv(env, 'GIT_HTTP_USER_AGENT', user_agent.git)
+      env['GIT_ALLOW_PROTOCOL'] = (
+          'file:git:http:https:ssh:persistent-http:persistent-https:sso:rpc')
+    env['GIT_HTTP_USER_AGENT'] = user_agent.git
 
     if project:
       if not cwd:
@@ -237,7 +292,7 @@ class GitCommand(object):
     command = [GIT]
     if bare:
       if gitdir:
-        _setenv(env, GIT_DIR, gitdir)
+        env[GIT_DIR] = gitdir
       cwd = None
     command.append(cmdv[0])
     # Need to use the --progress flag for fetch/clone so output will be
@@ -253,7 +308,7 @@ class GitCommand(object):
       stdin = None
 
     stdout = subprocess.PIPE
-    stderr = subprocess.PIPE
+    stderr = subprocess.STDOUT if merge_output else subprocess.PIPE
 
     if IsTrace():
       global LAST_CWD
@@ -281,15 +336,17 @@ class GitCommand(object):
         dbg += ' 1>|'
       if stderr == subprocess.PIPE:
         dbg += ' 2>|'
+      elif stderr == subprocess.STDOUT:
+        dbg += ' 2>&1'
       Trace('%s', dbg)
 
     try:
       p = subprocess.Popen(command,
-                           cwd = cwd,
-                           env = env,
-                           stdin = stdin,
-                           stdout = stdout,
-                           stderr = stderr)
+                           cwd=cwd,
+                           env=env,
+                           stdin=stdin,
+                           stdout=stdout,
+                           stderr=stderr)
     except Exception as e:
       raise GitError('%s: %s' % (command[1], e))
 
@@ -328,7 +385,8 @@ class GitCommand(object):
     p = self.process
     s_in = platform_utils.FileDescriptorStreams.create()
     s_in.add(p.stdout, sys.stdout, 'stdout')
-    s_in.add(p.stderr, sys.stderr, 'stderr')
+    if p.stderr is not None:
+      s_in.add(p.stderr, sys.stderr, 'stderr')
     self.stdout = ''
     self.stderr = ''
 

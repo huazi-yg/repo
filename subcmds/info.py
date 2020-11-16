@@ -16,11 +16,13 @@
 
 from command import PagedCommand
 from color import Coloring
-from git_refs import R_M
+from git_refs import R_M, R_HEADS
+
 
 class _Coloring(Coloring):
   def __init__(self, config):
     Coloring.__init__(self, config, "status")
+
 
 class Info(PagedCommand):
   common = True
@@ -41,15 +43,14 @@ class Info(PagedCommand):
                  dest="local", action="store_true",
                  help="Disable all remote operations")
 
-
   def Execute(self, opt, args):
     self.out = _Coloring(self.manifest.globalConfig)
-    self.heading = self.out.printer('heading', attr = 'bold')
-    self.headtext = self.out.nofmt_printer('headtext', fg = 'yellow')
-    self.redtext = self.out.printer('redtext', fg = 'red')
-    self.sha = self.out.printer("sha", fg = 'yellow')
+    self.heading = self.out.printer('heading', attr='bold')
+    self.headtext = self.out.nofmt_printer('headtext', fg='yellow')
+    self.redtext = self.out.printer('redtext', fg='red')
+    self.sha = self.out.printer("sha", fg='yellow')
     self.text = self.out.nofmt_printer('text')
-    self.dimtext = self.out.printer('dimtext', attr = 'dim')
+    self.dimtext = self.out.printer('dimtext', attr='dim')
 
     self.opt = opt
 
@@ -103,6 +104,10 @@ class Info(PagedCommand):
         self.headtext(currentBranch)
         self.out.nl()
 
+      self.heading("Manifest revision: ")
+      self.headtext(p.revisionExpr)
+      self.out.nl()
+
       localBranches = list(p.GetBranches().keys())
       self.heading("Local Branches: ")
       self.redtext(str(len(localBranches)))
@@ -118,11 +123,14 @@ class Info(PagedCommand):
       self.printSeparator()
 
   def findRemoteLocalDiff(self, project):
-    #Fetch all the latest commits
+    # Fetch all the latest commits.
     if not self.opt.local:
       project.Sync_NetworkHalf(quiet=True, current_branch_only=True)
 
-    logTarget = R_M + self.manifest.manifestProject.config.GetBranch("default").merge
+    branch = self.manifest.manifestProject.config.GetBranch('default').merge
+    if branch.startswith(R_HEADS):
+      branch = branch[len(R_HEADS):]
+    logTarget = R_M + branch
 
     bareTmp = project.bare_git._bare
     project.bare_git._bare = False
@@ -191,16 +199,16 @@ class Info(PagedCommand):
       commits = branch.commits
       date = branch.date
       self.text('%s %-33s (%2d commit%s, %s)' % (
-        branch.name == project.CurrentBranch and '*' or ' ',
-        branch.name,
-        len(commits),
-        len(commits) != 1 and 's' or '',
-        date))
+          branch.name == project.CurrentBranch and '*' or ' ',
+          branch.name,
+          len(commits),
+          len(commits) != 1 and 's' or '',
+          date))
       self.out.nl()
 
       for commit in commits:
         split = commit.split()
-        self.text('{0:38}{1} '.format('','-'))
+        self.text('{0:38}{1} '.format('', '-'))
         self.sha(split[0] + " ")
         self.text(" ".join(split[1:]))
         self.out.nl()

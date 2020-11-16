@@ -66,7 +66,8 @@ class Command(object):
         usage = self.helpUsage.strip().replace('%prog', me)
       except AttributeError:
         usage = 'repo %s' % self.NAME
-      self._optparse = optparse.OptionParser(usage=usage)
+      epilog = 'Run `repo help %s` to view the detailed manual.' % self.NAME
+      self._optparse = optparse.OptionParser(usage=usage, epilog=epilog)
       self._Options(self._optparse)
     return self._optparse
 
@@ -123,9 +124,9 @@ class Command(object):
     project = None
     if os.path.exists(path):
       oldpath = None
-      while path and \
-            path != oldpath and \
-            path != manifest.topdir:
+      while (path and
+             path != oldpath and
+             path != manifest.topdir):
         try:
           project = self._by_path[path]
           break
@@ -236,6 +237,7 @@ class InteractiveCommand(Command):
   """Command which requires user interaction on the tty and
      must not run within a pager, even if the user asks to.
   """
+
   def WantPager(self, _opt):
     return False
 
@@ -244,6 +246,7 @@ class PagedCommand(Command):
   """Command which defaults to output in a pager, as its
      display tends to be larger than one screen full.
   """
+
   def WantPager(self, _opt):
     return True
 

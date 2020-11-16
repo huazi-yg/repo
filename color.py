@@ -84,6 +84,7 @@ def _Color(fg=None, bg=None, attr=None):
     code = ''
   return code
 
+
 DEFAULT = None
 
 
@@ -111,6 +112,7 @@ class Coloring(object):
     self._section = 'color.%s' % section_type
     self._config = config
     self._out = sys.stdout
+    self._errout = sys.stderr
 
     on = DEFAULT
     if on is None:
@@ -144,13 +146,17 @@ class Coloring(object):
   def nl(self):
     self._out.write('\n')
 
-  def printer(self, opt=None, fg=None, bg=None, attr=None):
+  def printer(self, opt=None, fg=None, bg=None, attr=None, ot='stdout'):
     s = self
     c = self.colorer(opt, fg, bg, attr)
 
     def f(fmt, *args):
       s._out.write(c(fmt, *args))
-    return f
+
+    def fe(fmt, *args):
+      s._errout.write(c(fmt, *args))
+    out_f = f if ot == 'stdout' else fe
+    return out_f
 
   def nofmt_printer(self, opt=None, fg=None, bg=None, attr=None):
     s = self
